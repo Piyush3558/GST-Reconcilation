@@ -1,5 +1,5 @@
 import { Decimal } from "decimal.js";
-import type { Issue } from "../shared/types.js";
+import type { Issue } from "../../shared/types.js";
 export const exactInvoice = (s: string) => s.trim().toUpperCase();
 export const normalizedInvoice = (s: string) =>
   exactInvoice(s).replace(/[^A-Z0-9]/g, "");

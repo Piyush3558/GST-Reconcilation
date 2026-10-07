@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Run } from "../shared/types";
+import type { Run } from "../../shared/types";
 import "./portal.css";
 export default function Portal() {
   const [purchase, setPurchase] = useState<File | null>(null),

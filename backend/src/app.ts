@@ -8,7 +8,7 @@ import { parse } from "./parser.js";
 import { approveCandidate, defaultPolicy, reconcile } from "./engine.js";
 import { exportWorkbook } from "./workbook.js";
 import type { Store } from "./store.js";
-import type { Policy } from "../shared/types.js";
+import type { Policy } from "../../shared/types.js";
 import { configuredPolicy } from "./config.js";
 const decimal = z.string().regex(/^\d{1,5}(?:\.\d{1,2})?$/);
 const policySchema = z.object({

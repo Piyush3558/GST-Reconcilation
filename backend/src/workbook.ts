@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
-import type { Result, Run } from "../shared/types.js";
-import { amounts } from "../shared/types.js";
+import type { Result, Run } from "../../shared/types.js";
+import { amounts } from "../../shared/types.js";
 
 export async function exportWorkbook(run: Run): Promise<Buffer> {
   const book = new ExcelJS.Workbook();

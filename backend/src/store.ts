@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile, rename, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import mongoose from "mongoose";
-import type { Run } from "../shared/types.js";
+import type { Run } from "../../shared/types.js";
 export interface Store {
   kind: string;
   get(id: string): Promise<Run | null>;

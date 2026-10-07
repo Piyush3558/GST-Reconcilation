@@ -1,8 +1,8 @@
 import { it, expect } from "vitest";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
-import { createStore } from "../server/store.js";
-import { reconcile } from "../server/engine.js";
+import { createStore } from "../backend/src/store.js";
+import { reconcile } from "../backend/src/engine.js";
 it("persists and reloads a complete run using an actual temporary MongoDB", async () => {
   const mongo = await MongoMemoryServer.create();
   try {

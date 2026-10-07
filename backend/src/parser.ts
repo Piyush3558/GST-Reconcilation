@@ -2,7 +2,7 @@ import ExcelJS from "exceljs";
 import yauzl from "yauzl";
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
-import type { Document, Issue, Parsed } from "../shared/types.js";
+import type { Document, Issue, Parsed } from "../../shared/types.js";
 import {
   dateValue,
   exactInvoice,

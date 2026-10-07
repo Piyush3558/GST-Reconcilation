@@ -2,9 +2,9 @@ import { beforeAll, describe, it, expect } from "vitest";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import ExcelJS from "exceljs";
-import { parse } from "../server/parser.js";
-import { reconcile } from "../server/engine.js";
-import { exportWorkbook } from "../server/workbook.js";
+import { parse } from "../backend/src/parser.js";
+import { reconcile } from "../backend/src/engine.js";
+import { exportWorkbook } from "../backend/src/workbook.js";
 import type { Run } from "../shared/types.js";
 const p = process.env.GST_PURCHASE_PATH!,
   g = process.env.GST_2B_PATH!;

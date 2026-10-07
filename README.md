@@ -8,12 +8,32 @@ Requires Node.js 22 or later.
 
 ```bash
 npm ci
-cp .env.example .env
+cp -n backend/.env.example backend/.env
 npm run build
 npm start
 ```
 
-Open http://127.0.0.1:5000. For development use `npm run dev`.
+Open http://127.0.0.1:5000 for the production build.
+
+For development, run `npm install` once from the project root, then open two terminals:
+
+**Backend**
+
+```bash
+cd backend
+npm run dev
+```
+
+**Frontend**
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open http://127.0.0.1:5173. The frontend forwards API requests to the backend at http://127.0.0.1:5000. Alternatively, `npm run dev` from the root starts both. Stop old servers first to avoid occupied ports.
+
+Each folder has its own package and scripts. npm workspaces share the root lockfile and installation. Keep the `shared/` folder beside them for common TypeScript types. Backend settings are in `backend/.env`, and default local run storage is `backend/data/`.
 
 Set `MONGODB_URI` in your private `.env` to enable MongoDB. URL-encode special characters in credentials. Without MongoDB, runs persist in private files in `data/`. If the database is unavailable, the portal displays a warning and falls back to local storage. Local runs are not automatically migrated. Never commit credentials or financial workbooks.
 
@@ -57,7 +77,7 @@ Private baseline workbook/API tests and the full browser upload/download test ar
 
 ## Layout and API
 
-`src/` contains the portal; `server/` contains parsing, matching, export, CLI and storage; `shared/` contains record contracts; `tests/` and `e2e/` contain verification.
+`frontend/src/` contains the portal; `backend/src/` contains parsing, matching, export, CLI and storage; `shared/` contains record contracts; `tests/` and `e2e/` contain verification. Production frontend files are built into `frontend/dist/` and served by the backend.
 
 The API exposes health, run listing/retrieval/download, multipart validation and run creation (`purchase` and `gst2b` fields), and audited candidate approval. Uploads are capped at 20 MB each and 100 MB expanded. Macros and embedded objects are rejected. User cell values are not executed as formulas.
 
