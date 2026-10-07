@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+data/
+coverage/
+test-results/
+playwright-report/
+*.xlsx
+*.log
+RECONCILIATION_ANALYSIS.md
+RECONCILIATION_VALIDATION.md
+UNRESOLVED_BUSINESS_RULES.md
+SOURCE_MANIFEST.json
+HISTORICAL_VALIDATION.json
+Reconciled*.json
