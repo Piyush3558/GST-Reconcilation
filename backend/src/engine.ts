@@ -9,7 +9,7 @@ import {
   type Run,
   type Summary,
   type Money,
-} from "../shared/types.js";
+} from "../../shared/types.js";
 import { distance, rounded, sum } from "./normalize.js";
 
 export const defaultPolicy: Policy = {

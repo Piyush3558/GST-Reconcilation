@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { z } from "zod";
 import { defaultPolicy } from "./engine.js";
-import type { Policy } from "../shared/types.js";
+import type { Policy } from "../../shared/types.js";
 const decimal = z.string().regex(/^\d{1,5}(?:\.\d{1,2})?$/);
 export const configuredPolicy: Policy = {
   ...defaultPolicy,

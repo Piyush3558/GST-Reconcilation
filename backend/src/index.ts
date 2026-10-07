@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createStore } from "./store.js";
 import { createApp } from "./app.js";
 const host = process.env.HOST ?? "127.0.0.1";
@@ -22,7 +23,7 @@ try {
   console.warn(databaseWarning);
   store = await createStore(resolve(process.env.DATA_DIR ?? "data"));
 }
-createApp(store, token, resolve("dist"), databaseWarning).listen(
+createApp(store, token, fileURLToPath(new URL("../../frontend/dist", import.meta.url)), databaseWarning).listen(
   port,
   host,
   () =>

@@ -1,0 +1,34 @@
+{
+  "name": "gst-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "reconcile": "tsx src/cli.ts",
+    "analyze": "tsx src/analyze.ts",
+    "validate:history": "tsx src/validate-history.ts"
+  },
+  "dependencies": {
+    "decimal.js": "^10.6.0",
+    "dotenv": "^17.0.0",
+    "exceljs": "^4.4.0",
+    "express": "^5.1.0",
+    "helmet": "^8.1.0",
+    "mongoose": "^8.19.0",
+    "multer": "^2.0.2",
+    "yauzl": "^3.2.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/multer": "^2.0.0",
+    "@types/yauzl": "^2.10.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "@types/node": "^22.0.0"
+  }
+}

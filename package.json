@@ -4,48 +4,29 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "analyze": "tsx server/analyze.ts",
-    "reconcile": "tsx server/cli.ts",
+    "analyze": "npm run analyze --workspace backend",
+    "reconcile": "npm run reconcile --workspace backend",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "build": "npm run typecheck && vite build",
-    "start": "tsx server/index.ts",
-    "dev": "concurrently \"tsx watch server/index.ts\" \"vite --host 127.0.0.1\"",
-    "validate:history": "tsx server/validate-history.ts",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspaces",
+    "build": "npm run typecheck && npm run build --workspace frontend",
+    "start": "npm run start --workspace backend",
+    "dev": "concurrently \"npm run dev --workspace backend\" \"npm run dev --workspace frontend\"",
+    "validate:history": "npm run validate:history --workspace backend",
     "test:e2e": "playwright test"
   },
-  "dependencies": {
-    "@tailwindcss/vite": "^4.1.0",
-    "decimal.js": "^10.6.0",
-    "dotenv": "^17.0.0",
-    "exceljs": "^4.4.0",
-    "express": "^5.1.0",
-    "helmet": "^8.1.0",
-    "mongoose": "^8.19.0",
-    "multer": "^2.0.2",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "react-router-dom": "^7.9.0",
-    "tailwindcss": "^4.1.0",
-    "yauzl": "^3.2.0",
-    "zod": "^4.1.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@types/express": "^5.0.0",
     "@types/multer": "^2.0.0",
     "@types/node": "^22.0.0",
-    "@types/react": "^19.1.0",
-    "@types/react-dom": "^19.1.0",
     "@types/supertest": "^6.0.0",
     "@types/yauzl": "^2.10.0",
-    "@vitejs/plugin-react": "^4.7.0",
     "concurrently": "^9.2.0",
     "mongodb-memory-server": "^11.3.0",
     "supertest": "^7.1.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
-    "vite": "^6.1.0",
     "vitest": "^3.2.0",
     "prettier": "^3.6.0"
   },
@@ -53,5 +34,9 @@
     "exceljs": {
       "uuid": "11.1.1"
     }
-  }
+  },
+  "workspaces": [
+    "frontend",
+    "backend"
+  ]
 }
