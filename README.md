@@ -73,6 +73,16 @@ Unit, synthetic parser and temporary MongoDB tests run without confidential work
 
 The supplied reference regression runs when `GST_REFERENCE_PATH` points to the workbook. In this workspace it also recognizes the supplied Downloads path. The test compares all 1,288 rows by full identity and financial amounts, verifies evidence-derived remarks, then checks the three-sheet export. Synthetic unit, API and browser tests do not require private workbooks.
 
+## GitHub build checks
+
+GitHub Actions runs the following checks on every push, pull request, merge-queue run and manual dispatch:
+
+- `Build and unit tests`
+- `Browser workflow tests`
+- `Production dependency audit`
+
+To prevent an untested pull request from being merged, protect the `main` branch in GitHub and require these three status checks. Also enable **Require branches to be up to date before merging**. GitHub only lists a new check after its workflow has run at least once, so push this workflow branch before selecting the checks.
+
 ## Layout and API
 
 `frontend/src/` contains the portal; `backend/src/` contains parsing, matching, export, CLI and storage; `shared/` contains record contracts; `tests/` and `e2e/` contain verification. Production frontend files are built into `frontend/dist/` and served by the backend.
