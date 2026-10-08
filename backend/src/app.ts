@@ -4,20 +4,10 @@ import multer from "multer";
 import { timingSafeEqual } from "node:crypto";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { parse } from "./parser.js";
-import { approveCandidate, defaultPolicy, reconcile } from "./engine.js";
+import { parseGstr2B, parsePurchase } from "./parser.js";
+import { reconcile, ruleVersion } from "./engine.js";
 import { exportWorkbook } from "./workbook.js";
 import type { Store } from "./store.js";
-import type { Policy } from "../../shared/types.js";
-import { configuredPolicy } from "./config.js";
-const decimal = z.string().regex(/^\d{1,5}(?:\.\d{1,2})?$/);
-const policySchema = z.object({
-  totalTolerance: decimal,
-  componentTolerance: decimal,
-  taxableTolerance: decimal,
-  invoiceValueTolerance: decimal,
-  punctuationMatching: z.boolean(),
-});
 const uuid = z.string().uuid();
 export function createApp(
   store: Store,
@@ -110,7 +100,7 @@ export function createApp(
     res.json({
       status: "ok",
       storage: store.kind,
-      policy: configuredPolicy,
+      ruleVersion,
       databaseWarning,
     }),
   );
@@ -127,21 +117,19 @@ export function createApp(
         return;
       }
       const [purchase, gst] = await Promise.all([
-        parse(p.buffer, p.originalname, "PURCHASE"),
-        parse(g.buffer, g.originalname, "GSTR2B"),
+        parsePurchase(p.buffer, p.originalname),
+        parseGstr2B(g.buffer, g.originalname),
       ]);
       res.json({
         purchase: {
           filename: purchase.filename,
-          records: purchase.documents.length,
-          sheets: purchase.sheets,
-          issues: purchase.issues,
+          records: purchase.lines.length,
+          sheet: purchase.sourceSheet.name,
         },
         gst: {
           filename: gst.filename,
-          records: gst.documents.length,
-          sheets: gst.sheets,
-          issues: gst.issues,
+          records: gst.records.length,
+          sheet: "B2B",
         },
       });
     }),
@@ -157,24 +145,14 @@ export function createApp(
         res.status(400).json({ error: "Upload both workbooks." });
         return;
       }
-      let settings: Policy = configuredPolicy;
-      if (req.body.policy) {
-        let json: unknown;
-        try {
-          json = JSON.parse(req.body.policy);
-        } catch {
-          res.status(400).json({ error: "Invalid policy JSON" });
-          return;
-        }
-        settings = { ...configuredPolicy, ...policySchema.parse(json) };
-      }
       const [purchase, gst] = await Promise.all([
-        parse(p.buffer, p.originalname, "PURCHASE"),
-        parse(g.buffer, g.originalname, "GSTR2B"),
+        parsePurchase(p.buffer, p.originalname),
+        parseGstr2B(g.buffer, g.originalname),
       ]);
-      const run = reconcile(purchase, gst, settings);
+      const run = reconcile(purchase, gst);
       await store.save(run);
-      res.status(201).json(run);
+      const { id, createdAt, ruleVersion: version, summary } = run;
+      res.status(201).json({ id, createdAt, ruleVersion: version, summary });
     }),
   );
   app.get("/api/runs/:id", async (req, res) => {
@@ -184,7 +162,8 @@ export function createApp(
       res.status(404).json({ error: "Run not found" });
       return;
     }
-    res.json(run);
+    const { id: runId, createdAt, ruleVersion: version, summary } = run;
+    res.json({ id: runId, createdAt, ruleVersion: version, summary });
   });
   app.get("/api/runs/:id/download", async (req, res) => {
     const id = uuid.parse(req.params.id);
@@ -203,42 +182,6 @@ export function createApp(
     );
     res.send(await exportWorkbook(run));
   });
-  app.post(
-    "/api/runs/:id/approve",
-    exclusive(async (req, res) => {
-      const id = uuid.parse(req.params.id);
-      const input = z
-        .object({
-          purchaseId: z.string().min(1).max(250),
-          gstId: z.string().min(1).max(250),
-          actor: z.string().trim().min(2).max(100),
-          reason: z.string().trim().min(8).max(1000),
-        })
-        .parse(req.body);
-      const run = await store.get(id);
-      if (!run) {
-        res.status(404).json({ error: "Run not found" });
-        return;
-      }
-      let next;
-      try {
-        next = approveCandidate(
-          run,
-          input.purchaseId,
-          input.gstId,
-          input.actor,
-          input.reason,
-        );
-      } catch {
-        res
-          .status(409)
-          .json({ error: "Candidate unavailable or already reviewed." });
-        return;
-      }
-      await store.save(next);
-      res.json(next);
-    }),
-  );
   app.use("/api", (_req, res) =>
     res.status(404).json({ error: "Endpoint not found" }),
   );

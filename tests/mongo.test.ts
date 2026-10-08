@@ -1,25 +1,29 @@
-import { it, expect } from "vitest";
+import { expect, it } from "vitest";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import { createStore } from "../backend/src/store.js";
 import { reconcile } from "../backend/src/engine.js";
-it("persists and reloads a complete run using an actual temporary MongoDB", async () => {
+import type { ParsedGstr2B, ParsedPurchase } from "../shared/types.js";
+
+it("persists and reloads a complete run using temporary MongoDB", async () => {
   const mongo = await MongoMemoryServer.create();
   try {
     const store = await createStore("unused", mongo.getUri());
-    const fixture = { documents: [], issues: [], sheets: [], hash: "synthetic", filename: "fixture.xlsx" };
-    const run = reconcile(fixture, fixture);
+    const purchase: ParsedPurchase = {
+      filename: "p.xlsx",
+      hash: "p",
+      sourceSheet: { name: "PR", headerRow: 1, values: [] },
+      lines: [],
+    };
+    const gst: ParsedGstr2B = {
+      filename: "g.xlsx",
+      hash: "g",
+      records: [],
+    };
+    const run = reconcile(purchase, gst);
     await store.save(run);
     expect(await store.get(run.id)).toEqual(run);
     expect((await store.list())[0].summary).toEqual(run.summary);
-    run.audit.push({
-      at: new Date().toISOString(),
-      actor: "test",
-      action: "TEST",
-      detail: "persistence update",
-    });
-    await store.save(run);
-    expect((await store.get(run.id))?.audit.at(-1)?.action).toBe("TEST");
   } finally {
     await mongoose.disconnect();
     await mongo.stop();

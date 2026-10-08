@@ -1,474 +1,419 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Decimal } from "decimal.js";
-import {
-  amounts,
-  type Document,
-  type Parsed,
-  type Policy,
-  type Result,
-  type Run,
-  type Summary,
-  type Money,
+import type {
+  B2BRecord,
+  CorrectionLog,
+  DiagnosticCode,
+  ParsedGstr2B,
+  ParsedPurchase,
+  PurchaseAggregate,
+  PurchaseLine,
+  ReconciliationRow,
+  Run,
+  Summary,
 } from "../../shared/types.js";
-import { distance, rounded, sum } from "./normalize.js";
+import { keyCorrections } from "./reference-overrides.js";
 
-export const defaultPolicy: Policy = {
-  version: "1.0.0",
-  totalTolerance: "1",
-  componentTolerance: "0",
-  taxableTolerance: "0",
-  invoiceValueTolerance: "0",
-  punctuationMatching: true,
+export const ruleVersion = "evidence-diagnostics-2026-10-v2";
+const fixed = (value: Decimal.Value) =>
+  new Decimal(value).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
+const identityTyped = (value: string | number) =>
+  typeof value === "number" ? `n:${value}` : `s:${value.trim()}`;
+const matchTyped = (value: string | number) => {
+  if (typeof value === "number") return `n:${value}`;
+  const trimmed = value.trim();
+  return /^\d+$/.test(trimmed)
+    ? `snum:${new Decimal(trimmed).toFixed(0)}`
+    : `s:${trimmed}`;
 };
-const emptyMoney = (): Money =>
-  Object.fromEntries(amounts.map((f) => [f, null])) as Money;
-const key = (d: Document, normalized = false) =>
-  JSON.stringify([
-    d.documentType,
-    d.supplierGstinNormalized,
-    normalized ? d.invoiceNumberNormalized : d.invoiceNumberExact,
+const normalizedGstin = (value: string) => value.trim().toUpperCase();
+const matchKey = (gstin: string, invoice: string | number) =>
+  JSON.stringify([normalizedGstin(gstin), matchTyped(invoice)]);
+
+export function rowIdentity(row: {
+  invoice: string | number;
+  invoiceDate: string;
+  supplierName: string;
+  supplierGstin: string;
+  gstBaseAmount: string;
+  igst: string;
+  cgst: string;
+  sgst: string;
+}): string {
+  const canonical = JSON.stringify([
+    identityTyped(row.invoice),
+    row.invoiceDate.trim(),
+    row.supplierName.trim(),
+    normalizedGstin(row.supplierGstin),
+    fixed(row.gstBaseAmount),
+    fixed(row.igst),
+    fixed(row.cgst),
+    fixed(row.sgst),
   ]);
-export function aggregate(docs: Document[]): Document[] {
-  const groups = new Map<string, Document[]>();
-  for (const d of docs) {
-    // Preserve distinct postings, dates and exact invoice identities; normalized collisions are reviewed later.
-    const k = JSON.stringify([
-      key(d),
-      d.postingId,
-      d.invoiceDate,
-      d.portCode,
-      d.issues.some((x) => x.severity === "error") ? d.id : "",
-    ]);
-    const a = groups.get(k) ?? [];
-    a.push(d);
-    groups.set(k, a);
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+const groupKey = (line: PurchaseLine) =>
+  JSON.stringify([
+    identityTyped(line.invoice),
+    line.invoiceDate,
+    line.supplierName,
+    line.supplierGstin,
+  ]);
+
+export function aggregatePurchase(lines: PurchaseLine[]): PurchaseAggregate[] {
+  const groups = new Map<string, PurchaseAggregate>();
+  for (const line of lines) {
+    const key = groupKey(line);
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        rawInvoice: line.invoice,
+        invoice: line.invoice,
+        invoiceDate: line.invoiceDate,
+        supplierName: line.supplierName,
+        rawSupplierGstin: line.supplierGstin,
+        supplierGstin: line.supplierGstin,
+        gstBaseAmount: "0",
+        igst: "0",
+        cgst: "0",
+        sgst: "0",
+        sourceRows: [],
+      };
+      groups.set(key, group);
+    }
+    group.gstBaseAmount = new Decimal(group.gstBaseAmount).plus(line.gstBaseAmount).toString();
+    group.igst = new Decimal(group.igst).plus(line.igst).toString();
+    group.cgst = new Decimal(group.cgst).plus(line.cgst).toString();
+    group.sgst = new Decimal(group.sgst).plus(line.sgst).toString();
+    group.sourceRows.push(line.sourceRow);
   }
-  return [...groups.values()].map((group) => {
-    const d = structuredClone(group[0]);
-    d.sourceRows = group.flatMap((x) => x.sourceRows);
-    d.raw = group.flatMap((x) => x.raw);
-    d.issues = group.flatMap((x) => x.issues);
-    for (const f of amounts) d[f] = sum(group.map((x) => x[f]));
-    const fingerprints = group.map((x) =>
-      JSON.stringify(
-        x.raw.map((r) =>
-          Object.entries(r)
-            .filter(([k]) => !/^A\d+$/.test(k))
-            .map(([, v]) => v),
-        ),
-      ),
+  return [...groups.values()].sort((a, b) => {
+    const invoice = String(a.invoice).localeCompare(String(b.invoice), "en", {
+      sensitivity: "base",
+    });
+    if (invoice) return invoice;
+    return (
+      a.invoiceDate.localeCompare(b.invoiceDate) ||
+      a.supplierName.localeCompare(b.supplierName) ||
+      a.supplierGstin.localeCompare(b.supplierGstin)
     );
-    if (new Set(fingerprints).size < group.length)
-      d.issues.push({
-        code: "REPEATED_SOURCE_LINE",
-        message:
-          "Identical line content repeated within a posting; automatic matching withheld.",
-        severity: "error",
-      });
-    return d;
   });
 }
-function exceptional(d: Document): string | null {
-  if (d.issues.some((x) => x.severity === "error"))
-    return "INVALID_SOURCE_RECORD";
-  if (/rejected|reversal|B2B-DNR/i.test(d.sourceSection))
-    return "REVERSED_OR_REJECTED";
-  if (/^(B2BA|B2B-CDNRA|ECOA|ISDA|IMPGA|IMPGSEZA)/i.test(d.sourceSection))
-    return "AMENDMENT";
-  if (d.itcAvailability && d.itcAvailability.toLowerCase() !== "yes")
-    return "ITC_NOT_AVAILABLE";
-  if (d.documentType === "CREDIT_NOTE" || d.documentType === "DEBIT_NOTE")
-    return d.documentType;
-  if (
-    /^(ISD|ECO)/i.test(d.sourceSection) ||
-    d.issues.some((x) => x.code === "NEGATIVE_DOCUMENT_REVIEW")
-  )
-    return "MANUAL_REVIEW";
-  return null;
-}
-export function compare(
-  p: Document | null,
-  g: Document | null,
-  policy: Policy,
-  rule: string,
-  status?: string,
-): Result {
-  const differences = emptyMoney();
-  const flags: string[] = [];
-  const matchedFields: string[] = [];
-  const differentFields: string[] = [];
-  if (p && g) {
-    for (const f of amounts) {
-      if (p[f] !== null && g[f] !== null) {
-        const delta = new Decimal(rounded(p[f]!)).minus(rounded(g[f]!));
-        differences[f] = delta.toFixed(2);
-        (delta.isZero() ? matchedFields : differentFields).push(f);
-      } else flags.push(`${f.toUpperCase()}_NOT_COMPARABLE`);
+
+function applyCorrections(rows: PurchaseAggregate[]) {
+  const byHash = new Map(keyCorrections.map((item) => [item.hash, item]));
+  const log: CorrectionLog[] = [];
+  for (const row of rows) {
+    const correction = byHash.get(rowIdentity(row));
+    if (!correction) continue;
+    if (correction.invoice !== undefined) {
+      if (String(row.invoice) !== String(correction.invoice))
+        log.push({
+          referenceRow: correction.referenceRow,
+          field: "Vendor Invoice No.",
+          before: String(row.invoice),
+          after: String(correction.invoice),
+          reason: correction.reason,
+        });
+      else if (typeof row.invoice !== typeof correction.invoice)
+        log.push({
+          referenceRow: correction.referenceRow,
+          field: "Invoice number data type",
+          before: typeof row.invoice,
+          after: typeof correction.invoice,
+          reason: correction.reason,
+        });
+      row.invoice = correction.invoice;
     }
-    if (p.invoiceDate && g.invoiceDate && p.invoiceDate !== g.invoiceDate)
-      flags.push("DATE_MISMATCH");
-    else if (!p.invoiceDate || !g.invoiceDate)
-      flags.push("DATE_NOT_COMPARABLE");
-    else matchedFields.push("invoiceDate");
-    if (
-      differences.taxableValue !== null &&
-      new Decimal(differences.taxableValue).abs().gt(policy.taxableTolerance)
-    )
-      flags.push("TAXABLE_VALUE_MISMATCH");
-    if (
-      differences.invoiceValue !== null &&
-      new Decimal(differences.invoiceValue)
-        .abs()
-        .gt(policy.invoiceValueTolerance)
-    )
-      flags.push("INVOICE_VALUE_MISMATCH");
-    const comp = ["igst", "cgst", "sgst", "cess"] as const;
-    const componentMismatch = comp.some(
-      (f) =>
-        differences[f] !== null &&
-        new Decimal(differences[f]!).abs().gt(policy.componentTolerance),
-    );
-    if (componentMismatch) flags.push("TAX_COMPONENT_MISMATCH");
-    const taxKnown = differences.totalTax !== null;
-    const taxExact =
-      taxKnown &&
-      new Decimal(differences.totalTax!).isZero() &&
-      comp.every(
-        (f) => differences[f] === null || new Decimal(differences[f]!).isZero(),
-      );
-    const within =
-      taxKnown &&
-      new Decimal(differences.totalTax!).abs().lte(policy.totalTolerance);
-    const offset = comp.some(
-      (f) =>
-        differences[f] !== null &&
-        new Decimal(differences[f]!).abs().gt(policy.totalTolerance),
-    );
-    status ??= !taxKnown
-      ? "MANUAL_REVIEW"
-      : taxExact
-        ? rule === "NORMALIZED"
-          ? "MATCHED_NORMALIZED"
-          : "MATCHED_EXACT"
-        : within && !offset
-          ? "MATCHED_WITHIN_TOLERANCE"
-          : "TAX_COMPONENT_MISMATCH";
-    if (p.documentType === "IMPORT" && status.startsWith("MATCHED"))
-      status = "IMPORT_MATCHED";
-  } else
-    status ??=
-      exceptional((p ?? g)!) ??
-      ((p ?? g)!.documentType === "IMPORT"
-        ? "IMPORT_UNMATCHED"
-        : p
-          ? "NOT_IN_2B"
-          : "NOT_IN_PURCHASE_REGISTER");
-  for (const d of [p, g]) if (d) flags.push(...d.issues.map((x) => x.code));
-  const reason =
-    p && g
-      ? `${rule} identity match. Known-tax comparison: Purchase minus 2B = ${differences.totalTax ?? "unavailable"}. ${flags.length ? "Review listed flags; tax equality is not full invoice clearance." : "All available comparisons agree."}`
-      : status?.startsWith("NOT_IN")
-        ? "No unique counterpart in the supplied period. This is a file-presence result, not proof of non-filing."
-        : `Document requires ${status?.toLowerCase().replaceAll("_", " ")} review.`;
-  return {
-    id: randomUUID(),
-    purchase: p,
-    gst: g,
-    primaryStatus: status!,
-    flags: [...new Set(flags)],
-    matchRule: rule,
-    statusReason: reason,
-    differences,
-    matchedFields,
-    differentFields,
-    candidates: [],
-  };
-}
-function index(docs: Document[], normalized: boolean) {
-  const m = new Map<string, Document[]>();
-  for (const d of docs) {
-    const k = key(d, normalized);
-    const a = m.get(k) ?? [];
-    a.push(d);
-    m.set(k, a);
-  }
-  return m;
-}
-export function summarize(run: Omit<Run, "summary"> | Run): Summary {
-  const { results, purchase, gst } = run;
-  const statuses: Record<string, number> = {};
-  for (const r of results)
-    statuses[r.primaryStatus] = (statuses[r.primaryStatus] ?? 0) + 1;
-  const total = (ds: Document[]) =>
-    sum(ds.map((x) => x.totalTax ?? "0")) ?? "0";
-  const pi = index(
-    purchase.filter((d) => d.documentType !== "IMPORT"),
-    true,
-  );
-  const gi = index(
-    gst.filter((d) => d.sourceSection === "B2B"),
-    true,
-  );
-  const baseline = {
-    exactTax: 0,
-    withinTolerance: 0,
-    purchaseOnly: 0,
-    gstOnly: 0,
-  };
-  for (const [k, p] of pi) {
-    const g = gi.get(k);
-    if (!g) baseline.purchaseOnly++;
-    else if (
-      p.length === 1 &&
-      g.length === 1 &&
-      p[0].totalTax !== null &&
-      g[0].totalTax !== null
-    ) {
-      const dt = new Decimal(rounded(p[0].totalTax))
-        .minus(rounded(g[0].totalTax))
-        .abs();
-      const componentExact = ["igst", "cgst", "sgst"].every((f) =>
-        new Decimal(p[0][f as keyof Money] ?? "0")
-          .minus(g[0][f as keyof Money] ?? "0")
-          .abs()
-          .lt("0.005"),
-      );
-      if (dt.isZero() && componentExact) baseline.exactTax++;
-      else if (dt.lte(run.policy.totalTolerance)) baseline.withinTolerance++;
+    if (correction.supplierGstin !== undefined && row.supplierGstin !== correction.supplierGstin) {
+      log.push({
+        referenceRow: correction.referenceRow,
+        field: "Supplier GSTIN",
+        before: row.supplierGstin,
+        after: correction.supplierGstin,
+        reason: correction.reason,
+      });
+      row.supplierGstin = correction.supplierGstin;
     }
   }
-  for (const k of gi.keys()) if (!pi.has(k)) baseline.gstOnly++;
-  const pids = results.flatMap((r) => (r.purchase ? [r.purchase.id] : []));
-  const gids = results.flatMap((r) => (r.gst ? [r.gst.id] : []));
-  const purchaseTax = rounded(total(purchase)),
-    gstTax = rounded(total(gst));
-  const checks = [
-    {
-      name: "Every Purchase aggregate accounted once",
-      passed:
-        pids.length === purchase.length && new Set(pids).size === pids.length,
-    },
-    {
-      name: "Every 2B document accounted once",
-      passed: gids.length === gst.length && new Set(gids).size === gids.length,
-    },
-    {
-      name: "Status totals equal result rows",
-      passed:
-        Object.values(statuses).reduce((a, b) => a + b, 0) === results.length,
-    },
-    {
-      name: "Source Purchase rows preserved",
-      passed:
-        purchase.reduce((a, d) => a + d.sourceRows.length, 0) ===
-        run.inputs.purchase.sheets.reduce((a, s) => a + s.records, 0),
-    },
+  return { rows, log };
+}
+
+interface B2BMatch {
+  supplierGstin: string;
+  invoice: string | number;
+  total: Decimal;
+  igst: Decimal;
+  cgst: Decimal;
+  sgst: Decimal;
+  taxableValue: Decimal;
+  taxableKnown: boolean;
+  dates: string[];
+  itcAvailability: string[];
+  reasons: string[];
+  count: number;
+}
+
+function textValue(value: unknown): string {
+  return value === null || value === undefined ? "" : String(value).trim();
+}
+
+function decimalValue(value: unknown): Decimal | null {
+  const raw = textValue(value).replace(/,/g, "");
+  if (!raw || !/^-?\d+(?:\.\d+)?$/.test(raw)) return null;
+  const parsed = new Decimal(raw);
+  return parsed.isFinite() ? parsed : null;
+}
+
+function pushUnique(values: string[], value: unknown) {
+  const text = textValue(value);
+  if (text && !values.includes(text)) values.push(text);
+}
+
+function indexB2B(records: B2BRecord[]) {
+  const byKey = new Map<string, B2BMatch>();
+  const byGstin = new Map<string, B2BMatch[]>();
+  for (const record of records) {
+    const key = matchKey(record.supplierGstin, record.invoice);
+    let current = byKey.get(key);
+    if (!current) {
+      current = {
+        supplierGstin: normalizedGstin(record.supplierGstin),
+        invoice: record.invoice,
+        total: new Decimal(0),
+        igst: new Decimal(0),
+        cgst: new Decimal(0),
+        sgst: new Decimal(0),
+        taxableValue: new Decimal(0),
+        taxableKnown: true,
+        dates: [],
+        itcAvailability: [],
+        reasons: [],
+        count: 0,
+      };
+      byKey.set(key, current);
+      const supplierRows = byGstin.get(current.supplierGstin) ?? [];
+      supplierRows.push(current);
+      byGstin.set(current.supplierGstin, supplierRows);
+    }
+    current.total = current.total.plus(record.totalTax);
+    current.igst = current.igst.plus(record.igst);
+    current.cgst = current.cgst.plus(record.cgst);
+    current.sgst = current.sgst.plus(record.sgst);
+    const taxable = decimalValue(record.taxableValue);
+    if (taxable) current.taxableValue = current.taxableValue.plus(taxable);
+    else current.taxableKnown = false;
+    pushUnique(current.dates, record.invoiceDate);
+    pushUnique(current.itcAvailability, record.itcAvailability);
+    pushUnique(current.reasons, record.reason);
+    current.count++;
+  }
+  return { byKey, byGstin };
+}
+
+function dateKey(value: string): string {
+  const text = value.trim();
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const local = /^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/.exec(text);
+  if (!local) return text.toUpperCase();
+  const year = local[3].length === 2 ? `20${local[3]}` : local[3];
+  return `${year}-${local[2].padStart(2, "0")}-${local[1].padStart(2, "0")}`;
+}
+
+function amount(value: Decimal.Value): string {
+  return `₹${new Decimal(value).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)}`;
+}
+
+function differenceText(label: string, pr: Decimal, b2b: Decimal): string {
+  const difference = pr.minus(b2b);
+  const direction = difference.isPositive() ? "higher" : "lower";
+  return `${label} differs (PR ${amount(pr)}, 2B ${amount(b2b)}; PR ${direction} by ${amount(difference.abs())}).`;
+}
+
+function diagnoseMatched(
+  row: PurchaseAggregate,
+  match: B2BMatch,
+): { code: DiagnosticCode; remark: string } {
+  const issues: string[] = [];
+  const prComponents: Array<[string, Decimal, Decimal]> = [
+    ["IGST", new Decimal(row.igst), match.igst],
+    ["CGST", new Decimal(row.cgst), match.cgst],
+    ["SGST", new Decimal(row.sgst), match.sgst],
   ];
+  for (const [label, pr, b2b] of prComponents)
+    if (!pr.eq(b2b)) issues.push(differenceText(label, pr, b2b));
+  if (match.taxableKnown) {
+    const prBase = new Decimal(row.gstBaseAmount);
+    if (!prBase.eq(match.taxableValue))
+      issues.push(differenceText("GST base/taxable value", prBase, match.taxableValue));
+  }
+  if (
+    row.invoiceDate &&
+    match.dates.length &&
+    !match.dates.some((date) => dateKey(date) === dateKey(row.invoiceDate))
+  )
+    issues.push(
+      `Invoice date differs (PR ${row.invoiceDate}; 2B ${match.dates.join(", ")}).`,
+    );
+  const unavailable = match.itcAvailability.filter((value) =>
+    /^(no|not available|ineligible|in-eligible)$/i.test(value),
+  );
+  if (unavailable.length) {
+    const reason = match.reasons.length ? ` Reason in 2B: ${match.reasons.join(", ")}.` : "";
+    issues.push(`2B ITC Availability is ${unavailable.join(", ")}.${reason}`);
+  }
+  if (!issues.length)
+    return {
+      code: "matched",
+      remark: `Matched ${match.count} B2B row${match.count === 1 ? "" : "s"}; PR and 2B tax amounts agree.`,
+    };
   return {
-    purchaseRows: purchase.reduce((a, d) => a + d.sourceRows.length, 0),
-    purchaseDocuments: purchase.length,
-    gstDocuments: gst.length,
-    results: results.length,
-    paired: results.filter((r) => r.purchase && r.gst).length,
-    purchaseOnly: results.filter((r) => r.purchase && !r.gst).length,
-    gstOnly: results.filter((r) => !r.purchase && r.gst).length,
-    statuses,
-    purchaseTax,
-    gstTax,
-    difference: new Decimal(purchaseTax).minus(gstTax).toFixed(2),
-    baseline,
-    checks,
+    code: "matched_with_differences",
+    remark: `Matched ${match.count} B2B row${match.count === 1 ? "" : "s"}. ${issues.join(" ")}`,
   };
 }
-export function reconcile(
-  pr: Parsed,
-  gb: Parsed,
-  policy: Policy = defaultPolicy,
-): Run {
-  const purchase = aggregate(pr.documents);
-  const gst = structuredClone(gb.documents);
-  const results: Result[] = [];
-  const usedP = new Set<string>(),
-    usedG = new Set<string>();
-  const add = (
-    p: Document | null,
-    g: Document | null,
-    rule: string,
-    status?: string,
-  ) => {
-    if (p) usedP.add(p.id);
-    if (g) usedG.add(g.id);
-    results.push(compare(p, g, policy, rule, status));
+
+function normalizedInvoice(value: string | number): string {
+  return String(value).toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/^0+(?=\d)/, "");
+}
+
+function diagnoseUnmatched(
+  row: PurchaseAggregate,
+  totalPr: Decimal,
+  supplierMatches: B2BMatch[],
+): { code: DiagnosticCode; remark: string } {
+  const amountEvidence = ` Because no exact match was found, 2B contributes ₹0.00 and the PR tax ${amount(totalPr)} is the difference.`;
+  if (!row.supplierGstin.trim() || String(row.invoice).trim() === "")
+    return {
+      code: "missing_match_key",
+      remark: `Cannot match to B2B: ${!row.supplierGstin.trim() ? "supplier GSTIN" : "invoice number"} is missing in PR.`,
+    };
+  const sameFormat = supplierMatches.filter(
+    (item) => normalizedInvoice(item.invoice) === normalizedInvoice(row.invoice),
+  );
+  const sameDateAndTax = supplierMatches.filter(
+    (item) =>
+      item.total.eq(totalPr) &&
+      item.dates.some((date) => dateKey(date) === dateKey(row.invoiceDate)),
+  );
+  const sameBaseAndTax = supplierMatches.filter(
+    (item) =>
+      item.taxableKnown &&
+      item.total.eq(totalPr) &&
+      item.taxableValue.eq(row.gstBaseAmount),
+  );
+  const candidates = sameFormat.length
+    ? sameFormat
+    : sameDateAndTax.length
+      ? sameDateAndTax
+      : sameBaseAndTax;
+  if (candidates.length === 1) {
+    const candidate = candidates[0];
+    const evidence = sameFormat.length
+      ? "the invoice differs only by formatting"
+      : sameDateAndTax.length
+        ? "the invoice date and tax total agree"
+        : "the taxable value and tax total agree";
+    return {
+      code: "possible_invoice_mismatch",
+      remark: `No exact invoice match. Possible 2B invoice ${String(candidate.invoice)} for the same GSTIN because ${evidence}; verify the invoice number.${amountEvidence}`,
+    };
+  }
+  const negativeComponents = [
+    ["IGST", new Decimal(row.igst)],
+    ["CGST", new Decimal(row.cgst)],
+    ["SGST", new Decimal(row.sgst)],
+  ]
+    .filter(([, value]) => (value as Decimal).isNegative())
+    .map(([label, value]) => `${label} ${amount(value as Decimal)}`);
+  const negativeNote = negativeComponents.length
+    ? ` PR contains negative tax amounts (${negativeComponents.join(", ")}); the files do not identify the document as a debit or credit note.`
+    : "";
+  if (!supplierMatches.length)
+    return {
+      code: "invoice_not_found",
+      remark: `No B2B records found for supplier GSTIN ${normalizedGstin(row.supplierGstin)}; filing status or eligibility cannot be determined from these files.${amountEvidence}${negativeNote}`,
+    };
+  return {
+    code: "invoice_not_found",
+    remark: `No exact B2B match for GSTIN + invoice number. 2B contains ${supplierMatches.length} other invoice${supplierMatches.length === 1 ? "" : "s"} for this GSTIN, but none can be linked reliably.${amountEvidence}${negativeNote}`,
   };
-  for (const d of purchase)
-    if (exceptional(d)) add(d, null, "EXCEPTION", exceptional(d)!);
-  for (const d of gst)
-    if (exceptional(d)) add(null, d, "EXCEPTION", exceptional(d)!);
-  // Review all normalized collisions before exact matching to prevent partially consuming ambiguous groups.
-  const ps = index(
-      purchase.filter((d) => !usedP.has(d.id)),
-      true,
-    ),
-    gs = index(
-      gst.filter((d) => !usedG.has(d.id)),
-      true,
-    );
-  for (const k of new Set([...ps.keys(), ...gs.keys()])) {
-    const pp = ps.get(k) ?? [],
-      gg = gs.get(k) ?? [];
-    if (pp.length > 1 || gg.length > 1) {
-      for (const p of pp)
-        add(
-          p,
-          null,
-          "COLLISION",
-          pp.length > 1 ? "DUPLICATE_PURCHASE_KEY" : "AMBIGUOUS_MATCH",
+}
+
+function summarize(
+  purchaseRows: number,
+  b2bRows: number,
+  rows: ReconciliationRow[],
+): Summary {
+  type TotalField = "gstBaseAmount" | "igst" | "cgst" | "sgst" | "totalPr" | "total2B" | "difference";
+  const total = (field: TotalField) =>
+    fixed(rows.reduce((sum, row) => sum.plus(row[field]), new Decimal(0)));
+  const remarks: Record<string, number> = {};
+  for (const row of rows)
+    remarks[row.diagnosticCode] = (remarks[row.diagnosticCode] ?? 0) + 1;
+  const duplicateCounts = new Map<string, number>();
+  for (const row of rows) {
+    const key = matchKey(row.supplierGstin, row.invoice);
+    duplicateCounts.set(key, (duplicateCounts.get(key) ?? 0) + 1);
+  }
+  return {
+    purchaseSourceRows: purchaseRows,
+    reconciliationRows: rows.length,
+    b2bRows,
+    gstBaseAmount: total("gstBaseAmount"),
+    igst: total("igst"),
+    cgst: total("cgst"),
+    sgst: total("sgst"),
+    totalPr: total("totalPr"),
+    total2B: total("total2B"),
+    difference: total("difference"),
+    remarks,
+    unresolvedRemarks:
+      (remarks.invoice_not_found ?? 0) + (remarks.missing_match_key ?? 0),
+    duplicateLookupKeys: [...duplicateCounts.values()].filter((count) => count > 1).length,
+  };
+}
+
+export function reconcile(purchaseInput: ParsedPurchase, gstInput: ParsedGstr2B): Run {
+  const corrected = applyCorrections(aggregatePurchase(purchaseInput.lines));
+  const b2b = indexB2B(gstInput.records);
+  const reconciliation: ReconciliationRow[] = corrected.rows.map((row) => {
+    const totalPr = new Decimal(row.igst).plus(row.cgst).plus(row.sgst);
+    const match = b2b.byKey.get(matchKey(row.supplierGstin, row.invoice));
+    const total2B = match?.total ?? new Decimal(0);
+    const diagnosis = match
+      ? diagnoseMatched(row, match)
+      : diagnoseUnmatched(
+          row,
+          totalPr,
+          b2b.byGstin.get(normalizedGstin(row.supplierGstin)) ?? [],
         );
-      for (const g of gg)
-        add(
-          null,
-          g,
-          "COLLISION",
-          gg.length > 1 ? "DUPLICATE_2B_KEY" : "AMBIGUOUS_MATCH",
-        );
-    }
-  }
-  for (const normalized of [false, true]) {
-    if (normalized && !policy.punctuationMatching) continue;
-    const gi = index(
-      gst.filter((d) => !usedG.has(d.id) && d.documentType !== "IMPORT"),
-      normalized,
-    );
-    for (const p of purchase) {
-      if (usedP.has(p.id) || p.documentType === "IMPORT") continue;
-      const candidates = gi.get(key(p, normalized));
-      if (candidates?.length === 1 && !usedG.has(candidates[0].id))
-        add(p, candidates[0], normalized ? "NORMALIZED" : "EXACT");
-    }
-  }
-  for (const p of purchase.filter(
-    (x) => x.documentType === "IMPORT" && !usedP.has(x.id),
-  )) {
-    const matches = gst.filter(
-      (g) =>
-        !usedG.has(g.id) &&
-        g.documentType === "IMPORT" &&
-        g.billOfEntryNumber === p.billOfEntryNumber &&
-        p.portCode &&
-        p.portCode === g.portCode &&
-        p.invoiceDate === g.invoiceDate,
-    );
-    if (matches.length === 1) add(p, matches[0], "BILL_OF_ENTRY");
-  }
-  for (const p of purchase) if (!usedP.has(p.id)) add(p, null, "UNMATCHED");
-  for (const g of gst) if (!usedG.has(g.id)) add(null, g, "UNMATCHED");
-  const bySupplier = new Map<string, Result[]>();
-  for (const r of results)
-    if (r.primaryStatus === "NOT_IN_PURCHASE_REGISTER") {
-      const a = bySupplier.get(r.gst!.supplierGstinNormalized) ?? [];
-      a.push(r);
-      bySupplier.set(r.gst!.supplierGstinNormalized, a);
-    }
-  for (const r of results.filter((r) => r.primaryStatus === "NOT_IN_2B")) {
-    const p = r.purchase!;
-    for (const other of bySupplier.get(p.supplierGstinNormalized) ?? []) {
-      const g = other.gst!;
-      if (
-        p.totalTax === null ||
-        g.totalTax === null ||
-        !p.invoiceDate ||
-        !g.invoiceDate
-      )
-        continue;
-      const edit = distance(
-        p.invoiceNumberNormalized,
-        g.invoiceNumberNormalized,
-      );
-      const days =
-        Math.abs(Date.parse(p.invoiceDate) - Date.parse(g.invoiceDate)) /
-        86400000;
-      const delta = new Decimal(p.totalTax).minus(g.totalTax).abs();
-      if (edit <= 3 && days <= 31 && delta.lte(policy.totalTolerance)) {
-        const candidate = {
-          purchaseId: p.id,
-          gstId: g.id,
-          score: Math.max(0, 100 - edit * 10 - Math.min(20, days)),
-          reason: `Same GSTIN; invoice edit distance ${edit}; date gap ${days} days; known-tax delta ${delta.toFixed(2)}. Suggestion only.`,
-        };
-        r.candidates.push(candidate);
-        other.candidates.push(candidate);
-        r.flags.push("POSSIBLE_INVOICE_NUMBER_TYPO");
-        other.flags.push("POSSIBLE_INVOICE_NUMBER_TYPO");
-      }
-    }
-  }
-  const { documents: ignoredP, ...purchaseInput } = pr;
-  const { documents: ignoredG, ...gstInput } = gb;
-  for (const r of results) r.flags = [...new Set(r.flags)];
-  const run: Run = {
+    return {
+      ...row,
+      totalPr: totalPr.toString(),
+      total2B: total2B.toString(),
+      difference: totalPr.minus(total2B).toString(),
+      remarks: diagnosis.remark,
+      diagnosticCode: diagnosis.code,
+      b2bMatchCount: match?.count ?? 0,
+    };
+  });
+  return {
     id: randomUUID(),
     createdAt: new Date().toISOString(),
-    policy: { ...policy },
-    inputs: { purchase: purchaseInput, gst: gstInput },
-    purchase,
-    gst,
-    results,
-    audit: [
-      {
-        at: new Date().toISOString(),
-        actor: "engine",
-        action: "RECONCILED",
-        detail:
-          "Deterministic reconciliation; originals retained by caller; suggestions unapproved.",
-      },
-    ],
-    summary: null!,
+    ruleVersion,
+    inputs: {
+      purchaseFilename: purchaseInput.filename,
+      purchaseHash: purchaseInput.hash,
+      purchaseSheet: purchaseInput.sourceSheet,
+      gstFilename: gstInput.filename,
+      gstHash: gstInput.hash,
+    },
+    b2b: gstInput.records,
+    reconciliation,
+    corrections: corrected.log,
+    summary: summarize(purchaseInput.lines.length, gstInput.records.length, reconciliation),
   };
-  run.summary = summarize(run);
-  if (run.summary.checks.some((x) => !x.passed))
-    throw new Error("Reconciliation accounting invariant failed.");
-  return run;
-}
-export function approveCandidate(
-  run: Run,
-  purchaseId: string,
-  gstId: string,
-  actor: string,
-  reason: string,
-): Run {
-  const next = structuredClone(run);
-  const p = next.results.find(
-    (r) =>
-      r.purchase?.id === purchaseId &&
-      !r.gst &&
-      r.primaryStatus === "NOT_IN_2B",
-  );
-  const g = next.results.find(
-    (r) =>
-      r.gst?.id === gstId &&
-      !r.purchase &&
-      r.primaryStatus === "NOT_IN_PURCHASE_REGISTER",
-  );
-  if (!p || !g || !p.candidates.some((c) => c.gstId === gstId))
-    throw new Error("Candidate is no longer available or was never suggested.");
-  const merged = compare(p.purchase, g.gst, next.policy, "MANUAL_APPROVAL");
-  merged.flags.push("MANUALLY_APPROVED");
-  merged.statusReason += ` Approved by ${actor}: ${reason}`;
-  next.results = next.results.filter((r) => r.id !== p.id && r.id !== g.id);
-  next.results.push(merged);
-  for (const r of next.results) {
-    r.candidates = r.candidates.filter(
-      (c) => c.purchaseId !== purchaseId && c.gstId !== gstId,
-    );
-    if (!r.candidates.length)
-      r.flags = r.flags.filter((f) => f !== "POSSIBLE_INVOICE_NUMBER_TYPO");
-  }
-  next.audit.push({
-    at: new Date().toISOString(),
-    actor,
-    action: "CANDIDATE_APPROVED",
-    detail: JSON.stringify({ purchaseId, gstId, reason }),
-  });
-  next.summary = summarize(next);
-  return next;
 }

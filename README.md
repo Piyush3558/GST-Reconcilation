@@ -39,18 +39,18 @@ Set `MONGODB_URI` in your private `.env` to enable MongoDB. URL-encode special c
 
 This single-process localhost portal has no login screen. Public deployment requires authentication, TLS and a deployment review. The API supports a Bearer token through `APP_ACCESS_TOKEN`; non-local binding requires a strong token. MongoDB stores metadata and immutable snapshots through GridFS. Configure backups and retention before operational use.
 
-## Matching and limitations
+## Matching and output
 
-- Read headers by name and preserve source rows and raw values. Use decimal arithmetic for amounts.
-- Aggregate Purchase lines by supplier, invoice, date and posting. Quarantine identical repeated lines and ambiguous normalized identities.
-- Match unique supplier/invoice identities exactly, then using punctuation normalization. Preserve leading zeros; never arbitrarily select duplicates.
-- Compare taxable value, individual tax components, total tax and invoice value independently. Default total-tax tolerance is 1; other tolerances default to zero and are configurable.
-- Suggest possible invoice typos without automatically applying them. Review requires an explicit actor and reason through the API.
-- Keep notes, amendments, imports, ITC exceptions and unsupported sign/offset cases visible for manual review.
+- Read Purchase Register and B2B columns by their approved headers.
+- Aggregate PR lines by vendor invoice number, vendor invoice date, supplier name and supplier GSTIN.
+- Sum GST Base Amount, IGST, CGST and SGST with decimal arithmetic.
+- Match B2B rows only by supplier GSTIN plus vendor invoice number and sum duplicate B2B rows.
+- Calculate tax totals as IGST + CGST + SGST. Taxable value and Cess are excluded from tax totals.
+- Explain each difference from uploaded evidence: tax-component amounts, GST-base versus 2B-taxable-value amounts, dates, exact-match status, and strong invoice-number candidates.
+- Do not copy reference remarks or infer filing, debit/credit-note, SEZ, or eligibility status without document-level evidence. There is no numeric tolerance.
+- Preserve the reference behavior when multiple PR aggregates share one lookup key: each row receives the same summed B2B amount.
 
-An exact tax match does not mean full invoice clearance or ITC eligibility. Unknown amounts stay blank, not zero. Customs cess is not assumed to be GST cess. Amount To Vendor may be net of deductions, making invoice-value comparison provisional. Confirm business rules before relying on results for filing.
-
-The workbook has 16 sheets including Summary, All Results, match categories, exceptions, Audit Log and Candidate Evidence. Category sheets intentionally overlap; All Results is the unique result register. Originals are never modified. Stored extracted evidence remains confidential.
+The downloaded workbook contains exactly three sheets in this order: `PR`, `B2B`, and `Reconciliation`. `Reconciliation` contains only the requested A:L business fields. See [RECONCILIATION_ANALYSIS.md](RECONCILIATION_ANALYSIS.md) and [REMARKS_RULES.md](REMARKS_RULES.md) for the verified mappings, corrections, rule priority and unresolved-data policy.
 
 ## CLI
 
@@ -58,7 +58,7 @@ The workbook has 16 sheets including Summary, All Results, match categories, exc
 npm run reconcile -- --purchase=/path/purchase.xlsx --gst2b=/path/gstr2b.xlsx --output=/path/Reconciled.xlsx
 ```
 
-Writes Excel and a companion JSON run. Optional `--reference=/path/reference.xlsx` verifies the reference file remains unchanged; it does not dynamically infer business rules.
+Writes the three-sheet Excel workbook and a companion JSON run. Optional `--reference=/path/reference.xlsx` verifies the reference file remains unchanged; it does not dynamically infer business rules.
 
 ## Verification
 
@@ -71,14 +71,12 @@ npm run test:e2e
 
 Unit, synthetic parser and temporary MongoDB tests run without confidential workbooks. The MongoDB test may download a server binary. Set `CHROME_PATH` to use an existing browser.
 
-Private baseline workbook/API tests and the full browser upload/download test are skipped unless `GST_PURCHASE_PATH` and `GST_2B_PATH` point to the original approved fixtures. Those tests assert dataset-specific counts, not arbitrary workbook results. Private fixtures and generated reports are deliberately excluded.
-
-`npm run analyze` additionally requires `GST_REFERENCE_PATH` and generates a private formula inventory and source manifest. `npm run validate:history` requires `GST_REFERENCE_PATH` and checks the original historical template specifically. Set these environment variables in your shell. Generated reports are ignored by Git.
+The supplied reference regression runs when `GST_REFERENCE_PATH` points to the workbook. In this workspace it also recognizes the supplied Downloads path. The test compares all 1,288 rows by full identity and financial amounts, verifies evidence-derived remarks, then checks the three-sheet export. Synthetic unit, API and browser tests do not require private workbooks.
 
 ## Layout and API
 
 `frontend/src/` contains the portal; `backend/src/` contains parsing, matching, export, CLI and storage; `shared/` contains record contracts; `tests/` and `e2e/` contain verification. Production frontend files are built into `frontend/dist/` and served by the backend.
 
-The API exposes health, run listing/retrieval/download, multipart validation and run creation (`purchase` and `gst2b` fields), and audited candidate approval. Uploads are capped at 20 MB each and 100 MB expanded. Macros and embedded objects are rejected. User cell values are not executed as formulas.
+The API exposes health, run listing/retrieval/download, multipart validation and run creation (`purchase` and `gst2b` fields). Uploads are capped at 20 MB each and 100 MB expanded. Macros and embedded objects are rejected. User cell values are not executed as formulas.
 
 Use the committed lockfile with `npm ci`. ExcelJS's transitive UUID dependency is overridden to patched version 11.1.1.

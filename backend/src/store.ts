@@ -44,7 +44,7 @@ export async function createStore(
       },
       async save(run) {
         const upload = bucket.openUploadStream(`${run.id}.json`, {
-          metadata: { runId: run.id, ruleVersion: run.policy.version },
+          metadata: { runId: run.id, ruleVersion: run.ruleVersion },
         });
         await new Promise<void>((resolve, reject) => {
           upload.on("finish", resolve);

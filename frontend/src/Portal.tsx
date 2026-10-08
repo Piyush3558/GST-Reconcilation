@@ -1,23 +1,51 @@
 import { useEffect, useRef, useState } from "react";
-import type { Run } from "../../shared/types";
+import type { RunResponse } from "../../shared/types";
 import "./portal.css";
+
+const serviceUnavailableMessage =
+  "Reconciliation service is unavailable. Start the backend with npm run dev from the project root, then try again.";
+
+async function readApiJson(response: Response): Promise<unknown> {
+  const body = await response.text();
+  if (!body.trim()) {
+    throw new Error(
+      response.ok
+        ? "The reconciliation service returned an empty response."
+        : serviceUnavailableMessage,
+    );
+  }
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    throw new Error(
+      response.ok
+        ? "The reconciliation service returned an invalid response."
+        : serviceUnavailableMessage,
+    );
+  }
+}
+
 export default function Portal() {
   const [purchase, setPurchase] = useState<File | null>(null),
     [gst, setGst] = useState<File | null>(null);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
-    [result, setResult] = useState<Run | null>(null),
+    [result, setResult] = useState<RunResponse | null>(null),
     [downloadUrl, setDownloadUrl] = useState(""),
     [dbWarning, setDbWarning] = useState("");
   const purchaseRef = useRef<HTMLInputElement>(null),
     gstRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     fetch("/api/health")
-      .then((r) => r.json())
-      .then((h) => {
-        if (h.databaseWarning) setDbWarning(h.databaseWarning);
+      .then(async (response) => {
+        if (!response.ok) throw new Error(serviceUnavailableMessage);
+        return readApiJson(response);
       })
-      .catch(() => {});
+      .then((payload) => {
+        const health = payload as { databaseWarning?: string };
+        if (health.databaseWarning) setDbWarning(health.databaseWarning);
+      })
+      .catch(() => setDbWarning(serviceUnavailableMessage));
   }, []);
   useEffect(
     () => () => {
@@ -36,10 +64,12 @@ export default function Portal() {
       form.append("purchase", purchase);
       form.append("gst2b", gst);
       const response = await fetch("/api/runs", { method: "POST", body: form });
-      const payload = await response.json();
+      const payload = (await readApiJson(response)) as {
+        error?: string;
+      } & Partial<RunResponse>;
       if (!response.ok)
         throw new Error(payload.error || "Could not process the files.");
-      const run = payload as Run;
+      const run = payload as RunResponse;
       const file = await fetch(`/api/runs/${run.id}/download`);
       if (!file.ok)
         throw new Error(
@@ -54,7 +84,11 @@ export default function Portal() {
       a.click();
     } catch (e) {
       setError(
-        e instanceof Error ? e.message : "Could not generate the workbook.",
+        e instanceof TypeError
+          ? serviceUnavailableMessage
+          : e instanceof Error
+            ? e.message
+            : "Could not generate the workbook.",
       );
     } finally {
       setBusy(false);
@@ -188,26 +222,25 @@ export default function Portal() {
             </p>
             <div className="result-counts">
               <span>
-                <strong>{result.summary.paired}</strong> paired invoices
+                <strong>{result.summary.reconciliationRows}</strong> reconciled invoices
               </span>
               <span>
-                <strong>{result.summary.purchaseOnly}</strong> purchase only
+                <strong>{result.summary.b2bRows}</strong> B2B source rows
               </span>
               <span>
-                <strong>{result.summary.gstOnly}</strong> 2B only, including
-                imports
+                <strong>{result.summary.unresolvedRemarks}</strong> remarks awaiting finance confirmation
               </span>
             </div>
             <p className="review-note">
-              Review the workbook’s differences and exception sheets before
-              using the results.
+              Review the Reconciliation remarks and differences before using
+              the results.
             </p>
           </section>
         )}
         {dbWarning && <p className="database-note">{dbWarning}</p>}
         <footer className="portal-bottom">
           Supplier GSTIN + invoice matching <span>·</span> Tax differences{" "}
-          <span>·</span> Review sheets included
+          <span>·</span> PR, B2B and Reconciliation sheets
         </footer>
       </main>
     </div>
