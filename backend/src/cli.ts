@@ -3,10 +3,9 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
-import { parse } from "./parser.js";
-import { reconcile, defaultPolicy } from "./engine.js";
+import { parseGstr2B, parsePurchase } from "./parser.js";
+import { reconcile } from "./engine.js";
 import { exportWorkbook } from "./workbook.js";
-import { configuredPolicy } from "./config.js";
 const { values } = parseArgs({
   options: {
     purchase: { type: "string" },
@@ -27,10 +26,10 @@ if (paths.some((p) => resolve(p) === resolve(values.output!)))
 const before = await Promise.all(paths.map((p) => readFile(p)));
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 const [p, g] = await Promise.all([
-  parse(before[0], basename(paths[0]), "PURCHASE"),
-  parse(before[1], basename(paths[1]), "GSTR2B"),
+  parsePurchase(before[0], basename(paths[0])),
+  parseGstr2B(before[1], basename(paths[1])),
 ]);
-const run = reconcile(p, g, configuredPolicy);
+const run = reconcile(p, g);
 await mkdir(dirname(resolve(values.output)), { recursive: true });
 await writeFile(values.output, await exportWorkbook(run));
 await writeFile(

@@ -9,7 +9,6 @@ test-results/
 playwright-report/
 *.xlsx
 *.log
-RECONCILIATION_ANALYSIS.md
 RECONCILIATION_VALIDATION.md
 UNRESOLVED_BUSINESS_RULES.md
 SOURCE_MANIFEST.json
