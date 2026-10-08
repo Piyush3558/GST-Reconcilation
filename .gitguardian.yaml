@@ -1,0 +1,9 @@
+version: 2
+exit_zero: false
+verbose: false
+show_secrets: false
+instance: https://dashboard.gitguardian.com
+secret:
+  ignored_paths: []
+  ignored_matches: []
+  ignored_detectors: []

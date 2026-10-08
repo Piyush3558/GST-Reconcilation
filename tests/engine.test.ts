@@ -80,7 +80,16 @@ describe("reference-compatible reconciliation engine", () => {
   it("matches only GSTIN plus invoice and sums multiple B2B rows", () => {
     const result = run(
       [line()],
-      [b2b({ cgst: "4", sgst: "5", totalTax: "9" }), b2b({ sourceRow: 3, cgst: "5", sgst: "4", totalTax: "9" })],
+      [
+        b2b({ taxableValue: 50, cgst: "4", sgst: "5", totalTax: "9" }),
+        b2b({
+          sourceRow: 3,
+          taxableValue: 50,
+          cgst: "5",
+          sgst: "4",
+          totalTax: "9",
+        }),
+      ],
     ).reconciliation[0];
     expect(result.total2B).toBe("18");
     expect(result.b2bMatchCount).toBe(2);
@@ -101,14 +110,14 @@ describe("reference-compatible reconciliation engine", () => {
     expect(run([line({ invoice: "1" })], [b2b({ invoice: 1 })]).reconciliation[0].total2B).toBe("0");
   });
 
-  it("does not remove punctuation or use date, supplier name or amounts as match keys", () => {
+  it("does not use a punctuation-only candidate in the matched 2B total", () => {
     const result = run(
       [line({ invoice: "INV/001", invoiceDate: "31-08-26", supplierName: "Different" })],
       [b2b({ invoice: "INV-001", totalTax: "999" })],
     ).reconciliation[0];
     expect(result.total2B).toBe("0");
-    expect(result.diagnosticCode).toBe("invoice_not_found");
-    expect(result.remarks).toContain("No exact B2B match");
+    expect(result.diagnosticCode).toBe("possible_invoice_mismatch");
+    expect(result.remarks).toContain("Possible 2B invoice INV-001");
   });
 
   it("explains tax, taxable-value and date differences from matched source rows", () => {
