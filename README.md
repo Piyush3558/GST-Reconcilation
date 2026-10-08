@@ -73,18 +73,15 @@ Unit, synthetic parser and temporary MongoDB tests run without confidential work
 
 The supplied reference regression runs when `GST_REFERENCE_PATH` points to the workbook. In this workspace it also recognizes the supplied Downloads path. The test compares all 1,288 rows by full identity and financial amounts, verifies evidence-derived remarks, then checks the three-sheet export. Synthetic unit, API and browser tests do not require private workbooks.
 
-## GitHub build and security checks
+## GitHub build checks
 
 GitHub Actions runs the following checks on every push, pull request, merge-queue run and manual dispatch:
 
 - `Build and unit tests`
 - `Browser workflow tests`
 - `Production dependency audit`
-- `Secret scan`
 
-The GitGuardian workflow needs an API key with the `scan` scope. Create the key in GitGuardian, then add it in GitHub under **Settings → Secrets and variables → Actions → New repository secret** with the name `GITGUARDIAN_API_KEY`. Never commit the key to this repository.
-
-To prevent an untested pull request from being merged, protect the `main` branch in GitHub and require these four status checks. Also enable **Require branches to be up to date before merging**. GitHub only lists a new check after its workflow has run at least once, so push this workflow branch before selecting the checks.
+To prevent an untested pull request from being merged, protect the `main` branch in GitHub and require these three status checks. Also enable **Require branches to be up to date before merging**. GitHub only lists a new check after its workflow has run at least once, so push this workflow branch before selecting the checks.
 
 ## Layout and API
 
